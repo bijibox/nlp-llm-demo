@@ -136,11 +136,41 @@ button:disabled {
   gap: 8px;
 }
 
+.text-tools {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .text-entry span,
 .number-control span {
   color: var(--muted);
   font-size: 13px;
   font-weight: 650;
+}
+
+.template-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(86px, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  background: #eef2f7;
+}
+
+.template-button {
+  min-height: 34px;
+  padding: 0 10px;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.template-button.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #ffffff;
 }
 
 textarea {
@@ -268,7 +298,17 @@ input {
     min-height: 0;
   }
 
+  .text-tools {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .mode-switch {
+    width: 100%;
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .template-switch {
     width: 100%;
     grid-template-columns: repeat(2, 1fr);
   }

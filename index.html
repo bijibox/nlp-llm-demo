@@ -13,7 +13,7 @@
         <div class="graph-bar">
           <div>
             <h1>Векторное пространство слов</h1>
-            <p id="graphHint">Добавьте текст, затем запустите обработку окна.</p>
+            <p id="graphHint">Обновите слова, затем запустите обработку окна.</p>
           </div>
           <div class="mode-switch" role="group" aria-label="Режим графика">
             <button class="mode-button active" type="button" data-mode="2d">2D</button>
@@ -26,17 +26,24 @@
       </section>
 
       <section class="controls-section" aria-label="Управление текстом и обработкой">
-        <label class="text-entry">
-          <span>Текст</span>
+        <div class="text-entry">
+          <div class="text-tools">
+            <span id="textLabel">Текст</span>
+            <div class="template-switch" role="group" aria-label="Шаблоны текста">
+              <button class="template-button active" type="button" data-template="base">Шаблон 1</button>
+              <button class="template-button" type="button" data-template="forest">Шаблон 2</button>
+            </div>
+          </div>
           <textarea
             id="textInput"
+            aria-labelledby="textLabel"
             spellcheck="false"
             placeholder="Вставьте сюда произвольный текст. Слова будут приведены к lowercase и добавлены в пространство."
           ></textarea>
-        </label>
+        </div>
 
         <div class="control-grid">
-          <button id="addWordsButton" class="primary-action" type="button">Добавить слова</button>
+          <button id="addWordsButton" class="primary-action" type="button">Обновить слова</button>
           <button id="randomizeButton" class="secondary-action" type="button">Разбросать</button>
 
           <label class="number-control">

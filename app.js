@@ -43,11 +43,19 @@ const state = {
   lastFrameAt: performance.now(),
 };
 
-const sampleText =
-  "Модель языка читает текст и размещает слова в пространстве. " +
-  "Слова рядом в тексте постепенно сближаются, поэтому похожие контексты образуют группы.";
+const textTemplates = {
+  base:
+    "Модель языка читает текст и размещает слова в пространстве. " +
+    "Слова рядом в тексте постепенно сближаются, поэтому похожие контексты образуют группы.",
+  forest: `лес дерево трава река птица волк лиса медведь след тропа тропа след медведь лиса волк птица река трава дерево лес
+дерево трава река птица волк лиса медведь след тропа лес медведь лиса волк птица река трава дерево лес тропа след
+трава река птица волк лиса медведь след тропа лес дерево волк птица река трава дерево лес тропа след медведь лиса
+река птица волк лиса медведь след тропа лес дерево трава река трава дерево лес тропа след медведь лиса волк птица
+птица волк лиса медведь след тропа лес дерево трава река дерево лес тропа след медведь лиса волк птица река трава
+волк лиса медведь след тропа лес дерево трава река птица тропа след медведь лиса волк птица река трава дерево лес`,
+};
 
-textInput.value = sampleText;
+textInput.value = textTemplates.base;
 
 function tokenize(text) {
   return (text.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu) || [])
@@ -90,19 +98,100 @@ function addWord(word) {
   return true;
 }
 
-function addWordsFromText() {
+function pruneEdges(wordsInText) {
+  for (const [key, edge] of state.edges) {
+    if (!wordsInText.has(edge.first) || !wordsInText.has(edge.second)) {
+      state.edges.delete(key);
+    }
+  }
+
+  for (const key of [...state.activeEdgeKeys]) {
+    if (!state.edges.has(key)) state.activeEdgeKeys.delete(key);
+  }
+
+  state.activeNegativePairs = state.activeNegativePairs.filter(
+    (pair) => wordsInText.has(pair.first) && wordsInText.has(pair.second),
+  );
+}
+
+function updateTemplateButtons() {
+  document.querySelectorAll(".template-button").forEach((button) => {
+    button.classList.toggle("active", textInput.value === textTemplates[button.dataset.template]);
+  });
+}
+
+function buildWordUpdateMessage(added, removed, stoppedProcessing) {
+  const stopNotice = stoppedProcessing ? ". Обработка остановлена: нужно минимум два слова." : "";
+
+  if (!state.tokens.length) {
+    return `Текст пуст: пространство очищено${stopNotice}`;
+  }
+
+  const changes = [];
+  if (added) changes.push(`добавлено: ${added}`);
+  if (removed) changes.push(`удалено: ${removed}`);
+  if (!changes.length) changes.push("состав не изменился");
+
+  return `Слова обновлены: ${changes.join(", ")}${stopNotice}`;
+}
+
+function updateWordsFromText({ announce = true, resetCursor = true } = {}) {
   state.tokens = tokenize(textInput.value);
+  const wordsInText = new Set(state.tokens);
   let added = 0;
-  for (const token of state.tokens) {
+
+  for (const token of wordsInText) {
     if (addWord(token)) added += 1;
   }
-  updateStatus(added ? `Добавлено новых слов: ${added}` : "Новых слов нет");
-  return added;
+
+  let removed = 0;
+  for (const word of [...state.words.keys()]) {
+    if (!wordsInText.has(word)) {
+      state.words.delete(word);
+      removed += 1;
+    }
+  }
+
+  pruneEdges(wordsInText);
+
+  if (resetCursor) {
+    state.cursor = 0;
+  } else if (state.cursor >= state.tokens.length) {
+    state.cursor = state.tokens.length ? state.cursor % state.tokens.length : 0;
+  }
+
+  let stoppedProcessing = false;
+  if (state.running && state.tokens.length < 2) {
+    state.running = false;
+    state.stepAccumulator = 0;
+    state.activeTokens = [];
+    state.activeEdgeKeys.clear();
+    state.activeNegativePairs = [];
+    startButton.disabled = false;
+    stopButton.disabled = true;
+    stoppedProcessing = true;
+  } else if (state.running) {
+    state.activeTokens = buildActiveWindow();
+    state.activeEdgeKeys.clear();
+    state.activeNegativePairs = [];
+  } else {
+    state.activeTokens = [];
+    state.activeEdgeKeys.clear();
+    state.activeNegativePairs = [];
+  }
+
+  updateTemplateButtons();
+
+  if (announce) {
+    updateStatus(buildWordUpdateMessage(added, removed, stoppedProcessing));
+  }
+
+  return { added, removed, stoppedProcessing };
 }
 
 function randomizeWords() {
   if (!state.words.size) {
-    updateStatus("Сначала добавьте слова");
+    updateStatus("Сначала обновите слова");
     return;
   }
 
@@ -600,7 +689,7 @@ function drawEmptyState() {
   ctx.fillStyle = "#657086";
   const maxWidth = Math.max(220, state.width - 48);
   ctx.font = "650 18px Inter, system-ui, sans-serif";
-  ctx.fillText("Добавьте слова из текста", state.width / 2, state.height / 2 - 12);
+  ctx.fillText("Обновите слова из текста", state.width / 2, state.height / 2 - 12);
   ctx.font = "14px Inter, system-ui, sans-serif";
   drawCenteredWrappedText(
     "Каждое слово появится как точка в векторном пространстве",
@@ -638,7 +727,7 @@ function resizeCanvas() {
 }
 
 function updateStatus(message) {
-  const tokenLength = state.tokens.length || tokenize(textInput.value).length;
+  const tokenLength = tokenize(textInput.value).length;
   wordCount.textContent = `${state.words.size} слов в пространстве`;
   tokenCount.textContent = `${tokenLength} слов в тексте`;
 
@@ -647,7 +736,7 @@ function updateStatus(message) {
   } else if (state.running) {
     graphHint.textContent = "Идет обработка: оранжевые линии сближают, пунктир показывает отталкивание от внешних слов.";
   } else {
-    graphHint.textContent = "Добавьте текст, затем запустите обработку окна.";
+    graphHint.textContent = "Обновите слова, затем запустите обработку окна.";
   }
 
   if (state.running && state.activeTokens.length) {
@@ -658,14 +747,10 @@ function updateStatus(message) {
 }
 
 function startProcessing() {
-  state.tokens = tokenize(textInput.value);
+  updateWordsFromText({ announce: false, resetCursor: true });
   if (state.tokens.length < 2) {
     updateStatus("Для обработки нужно минимум два слова в тексте");
     return;
-  }
-
-  for (const token of state.tokens) {
-    addWord(token);
   }
 
   state.running = true;
@@ -676,7 +761,6 @@ function startProcessing() {
   state.activeTokens = buildActiveWindow();
   startButton.disabled = true;
   stopButton.disabled = false;
-  addWordsButton.disabled = true;
   updateStatus();
 }
 
@@ -688,7 +772,6 @@ function stopProcessing() {
   state.stepAccumulator = 0;
   startButton.disabled = false;
   stopButton.disabled = true;
-  addWordsButton.disabled = false;
   updateStatus("Обработка остановлена: положение заморожено");
 }
 
@@ -795,14 +878,24 @@ function handleCanvasWheel(event) {
   state.spaceScale = clampSpaceScale(state.spaceScale * zoomFactor);
 }
 
-addWordsButton.addEventListener("click", addWordsFromText);
+addWordsButton.addEventListener("click", () => updateWordsFromText());
 randomizeButton.addEventListener("click", randomizeWords);
 startButton.addEventListener("click", startProcessing);
 stopButton.addEventListener("click", stopProcessing);
 
 textInput.addEventListener("input", () => {
-  state.tokens = tokenize(textInput.value);
+  updateTemplateButtons();
   updateStatus();
+});
+
+document.querySelectorAll(".template-button").forEach((button) => {
+  button.addEventListener("click", () => {
+    const template = textTemplates[button.dataset.template];
+    if (!template) return;
+    textInput.value = template;
+    updateTemplateButtons();
+    updateStatus("Шаблон выбран. Нажмите «Обновить слова», чтобы изменить пространство.");
+  });
 });
 
 document.querySelectorAll(".mode-button").forEach((button) => {

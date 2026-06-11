@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Демонстрация векторного представления слов</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="graph-section" aria-label="Векторное пространство слов">
+        <div class="graph-bar">
+          <div>
+            <h1>Векторное пространство слов</h1>
+            <p id="graphHint">Добавьте текст, затем запустите обработку окна.</p>
+          </div>
+          <div class="mode-switch" role="group" aria-label="Режим графика">
+            <button class="mode-button active" type="button" data-mode="2d">2D</button>
+            <button class="mode-button" type="button" data-mode="3d">3D</button>
+          </div>
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="spaceCanvas" aria-label="Граф слов в векторном пространстве"></canvas>
+        </div>
+      </section>
+
+      <section class="controls-section" aria-label="Управление текстом и обработкой">
+        <label class="text-entry">
+          <span>Текст</span>
+          <textarea
+            id="textInput"
+            spellcheck="false"
+            placeholder="Вставьте сюда произвольный текст. Слова будут приведены к lowercase и добавлены в пространство."
+          ></textarea>
+        </label>
+
+        <div class="control-grid">
+          <button id="addWordsButton" class="primary-action" type="button">Добавить слова</button>
+          <button id="randomizeButton" class="secondary-action" type="button">Разбросать</button>
+
+          <label class="number-control">
+            <span>Окно слов</span>
+            <input id="windowSizeInput" type="number" min="2" max="12" step="1" value="3" />
+          </label>
+
+          <label class="number-control">
+            <span>Скорость, шаг/с</span>
+            <input id="speedInput" type="number" min="1" max="200" step="10" value="10" />
+          </label>
+
+          <label class="number-control">
+            <span>Сближение</span>
+            <input id="stepInput" type="number" min="0.0" max="2" step="0.1" value="0.5" />
+          </label>
+
+          <label class="number-control">
+            <span>Отталкивание</span>
+            <input id="repulsionInput" type="number" min="0.0" max="2" step="0.1" value="0.3" />
+          </label>
+
+          <label class="number-control">
+            <span>Минимальное расстояние</span>
+            <input id="minDistanceInput" type="number" min="0.2" max="6" step="0.1" value="2.5" />
+          </label>
+
+          <button id="startButton" class="run-action" type="button">Начать обработку текста</button>
+          <button id="stopButton" type="button" disabled>Стоп</button>
+        </div>
+
+        <div class="status-row" aria-live="polite">
+          <span id="wordCount">0 слов в пространстве</span>
+          <span id="tokenCount">0 слов в тексте</span>
+          <span id="activeWindow">Окно не активно</span>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

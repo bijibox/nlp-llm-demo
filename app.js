@@ -16,25 +16,34 @@ const tokenCount = document.getElementById("tokenCount");
 const activeWindow = document.getElementById("activeWindow");
 const graphHint = document.getElementById("graphHint");
 
-const minSpaceScale = 0.45;
-const maxSpaceScale = 2.5;
-const coordinateLimit = 10;
+const minSpaceScale = 0.28;
+const maxSpaceScale = 8;
+const placementSize = 10;
+const placementLimit = placementSize / 2;
+const maxLayoutCoordinate = 80;
+const maxLayoutPairsPerStep = 2600;
+const gridStep = 1;
 
 const state = {
   mode: "2d",
   words: new Map(),
   edges: new Map(),
   tokens: [],
+  wordMass: new Map(),
+  pairTotal: 0,
+  maxPpmi: 0,
+  maxEdgeMass: 0,
   running: false,
   cursor: 0,
   stepAccumulator: 0,
   activeTokens: [],
   activeEdgeKeys: new Set(),
-  activeNegativePairs: [],
   width: 0,
   height: 0,
   dpr: 1,
   spaceScale: 1,
+  viewX: 0,
+  viewY: 0,
   angleX: -0.58,
   angleY: 0.72,
   drag: null,
@@ -43,17 +52,12 @@ const state = {
   lastFrameAt: performance.now(),
 };
 
-const textTemplates = {
-  base:
-    "Модель языка читает текст и размещает слова в пространстве. " +
-    "Слова рядом в тексте постепенно сближаются, поэтому похожие контексты образуют группы.",
-  forest: `лес дерево трава река птица волк лиса медведь след тропа тропа след медведь лиса волк птица река трава дерево лес
-дерево трава река птица волк лиса медведь след тропа лес медведь лиса волк птица река трава дерево лес тропа след
-трава река птица волк лиса медведь след тропа лес дерево волк птица река трава дерево лес тропа след медведь лиса
-река птица волк лиса медведь след тропа лес дерево трава река трава дерево лес тропа след медведь лиса волк птица
-птица волк лиса медведь след тропа лес дерево трава река дерево лес тропа след медведь лиса волк птица река трава
-волк лиса медведь след тропа лес дерево трава река птица тропа след медведь лиса волк птица река трава дерево лес`,
-};
+const textTemplates = Object.fromEntries(
+  [...document.querySelectorAll("[data-text-template]")].map((template) => [
+    template.dataset.textTemplate,
+    template.content.textContent.trim(),
+  ]),
+);
 
 textInput.value = textTemplates.base;
 
@@ -71,20 +75,20 @@ function clampNumber(input, fallback) {
   return Math.min(Math.max(value, min), max);
 }
 
-function getWorldBounds() {
+function getPlacementBounds() {
   return {
-    x: coordinateLimit,
-    y: coordinateLimit,
-    z: coordinateLimit,
+    x: placementLimit,
+    y: placementLimit,
+    z: placementLimit,
   };
 }
 
 function randomPosition() {
-  const bounds = getWorldBounds();
+  const bounds = getPlacementBounds();
   return {
-    x: (Math.random() * 2 - 1) * bounds.x * 0.86,
-    y: (Math.random() * 2 - 1) * bounds.y * 0.86,
-    z: state.mode === "3d" ? (Math.random() * 2 - 1) * bounds.z * 0.86 : 0,
+    x: (Math.random() * 2 - 1) * bounds.x,
+    y: (Math.random() * 2 - 1) * bounds.y,
+    z: state.mode === "3d" ? (Math.random() * 2 - 1) * bounds.z : 0,
   };
 }
 
@@ -101,17 +105,20 @@ function addWord(word) {
 function pruneEdges(wordsInText) {
   for (const [key, edge] of state.edges) {
     if (!wordsInText.has(edge.first) || !wordsInText.has(edge.second)) {
+      removePairMass(edge);
       state.edges.delete(key);
     }
+  }
+
+  for (const word of [...state.wordMass.keys()]) {
+    if (!wordsInText.has(word)) state.wordMass.delete(word);
   }
 
   for (const key of [...state.activeEdgeKeys]) {
     if (!state.edges.has(key)) state.activeEdgeKeys.delete(key);
   }
 
-  state.activeNegativePairs = state.activeNegativePairs.filter(
-    (pair) => wordsInText.has(pair.first) && wordsInText.has(pair.second),
-  );
+  recomputeAssociationMaxima();
 }
 
 function updateTemplateButtons() {
@@ -166,18 +173,15 @@ function updateWordsFromText({ announce = true, resetCursor = true } = {}) {
     state.stepAccumulator = 0;
     state.activeTokens = [];
     state.activeEdgeKeys.clear();
-    state.activeNegativePairs = [];
     startButton.disabled = false;
     stopButton.disabled = true;
     stoppedProcessing = true;
   } else if (state.running) {
     state.activeTokens = buildActiveWindow();
     state.activeEdgeKeys.clear();
-    state.activeNegativePairs = [];
   } else {
     state.activeTokens = [];
     state.activeEdgeKeys.clear();
-    state.activeNegativePairs = [];
   }
 
   updateTemplateButtons();
@@ -200,7 +204,8 @@ function randomizeWords() {
   }
 
   if (state.mode === "2d") flattenTo2d();
-  updateStatus("Слова случайно разбросаны");
+  resetView();
+  updateStatus("Слова случайно разбросаны в стартовой области 10×10");
 }
 
 function getWindowSize() {
@@ -220,7 +225,7 @@ function getRepulsionStep() {
 }
 
 function getMinDistance() {
-  return clampNumber(minDistanceInput, 2.5);
+  return clampNumber(minDistanceInput, 1.5);
 }
 
 function buildActiveWindow() {
@@ -239,6 +244,62 @@ function getEdgeKey(first, second) {
   return first < second ? `${first}\u0000${second}` : `${second}\u0000${first}`;
 }
 
+function removePairMass(edge) {
+  state.pairTotal = Math.max(0, state.pairTotal - edge.mass);
+  for (const word of [edge.first, edge.second]) {
+    const mass = state.wordMass.get(word);
+    if (mass === undefined) continue;
+    const next = mass - edge.mass;
+    if (next > 0.000001) {
+      state.wordMass.set(word, next);
+    } else {
+      state.wordMass.delete(word);
+    }
+  }
+}
+
+function addPairMass(first, second, mass) {
+  state.pairTotal += mass;
+  state.wordMass.set(first, (state.wordMass.get(first) || 0) + mass);
+  state.wordMass.set(second, (state.wordMass.get(second) || 0) + mass);
+}
+
+function recomputeAssociationMaxima() {
+  state.maxPpmi = 0;
+  state.maxEdgeMass = 0;
+
+  for (const edge of state.edges.values()) {
+    state.maxEdgeMass = Math.max(state.maxEdgeMass, edge.mass);
+    state.maxPpmi = Math.max(state.maxPpmi, getPpmi(edge.first, edge.second));
+  }
+}
+
+// PPMI: связь сильна, только если слова встречаются вместе чаще случайного.
+function getPpmi(first, second) {
+  const edge = state.edges.get(getEdgeKey(first, second));
+  if (!edge || !state.pairTotal) return 0;
+
+  const firstMass = state.wordMass.get(first);
+  const secondMass = state.wordMass.get(second);
+  if (!firstMass || !secondMass) return 0;
+
+  return Math.max(0, Math.log((edge.mass * state.pairTotal) / (firstMass * secondMass)));
+}
+
+// Связанность в [0, 1]: PPMI отделяет устойчивые контексты от частых случайных,
+// а частотная добавка ускоряет образование кластеров на небольших учебных текстах.
+function getRelatedness(first, second) {
+  const edge = state.edges.get(getEdgeKey(first, second));
+  if (!edge) return 0;
+
+  const ppmiScore = state.maxPpmi ? Math.min(getPpmi(first, second) / state.maxPpmi, 1) : 0;
+  const massScore = state.maxEdgeMass
+    ? Math.min(Math.log1p(edge.mass) / Math.log1p(state.maxEdgeMass), 1)
+    : 0;
+
+  return Math.max(ppmiScore, massScore * 0.62);
+}
+
 function reinforceActiveEdges() {
   state.activeEdgeKeys.clear();
 
@@ -252,11 +313,16 @@ function reinforceActiveEdges() {
       const edge = state.edges.get(key) || {
         first,
         second,
-        weight: 0,
+        mass: 0,
       };
-      edge.weight = Math.min(edge.weight + 0.22 / (secondIndex - index), 5);
+      const mass = 1 / (secondIndex - index);
+      edge.mass += mass;
+      addPairMass(first, second, mass);
       state.edges.set(key, edge);
       state.activeEdgeKeys.add(key);
+
+      state.maxEdgeMass = Math.max(state.maxEdgeMass * 0.9999, edge.mass);
+      state.maxPpmi = Math.max(state.maxPpmi * 0.9999, getPpmi(first, second));
     }
   }
 }
@@ -285,19 +351,18 @@ function clampAxis(word, positionKey, limit) {
 }
 
 function applyLayoutStep() {
-  const activeNames = [...new Set(state.activeTokens)].filter((word) => state.words.has(word));
-  if (activeNames.length < 2) return;
-  const activeSet = new Set(activeNames);
-  state.activeNegativePairs = [];
+  const wordNames = [...state.words.keys()];
+  if (wordNames.length < 2) return;
 
   const is3d = state.mode === "3d";
-  const attractionStep = getMovementStep();
-  const repulsionStep = getRepulsionStep();
+  const attractionRate = getMovementStep() * 0.075;
+  const repulsionRate = getRepulsionStep() * 0.085;
   const minDistance = getMinDistance();
-  const spacing = Math.max(minDistance, 0.2);
-  const bounds = getWorldBounds();
+  const clusterDistance = Math.max(minDistance, 0.35);
+  const separationDistance = clusterDistance * 4.3;
+  const activeSet = new Set(state.activeTokens);
   const deltas = new Map(
-    activeNames.map((word) => [
+    wordNames.map((word) => [
       word,
       {
         x: 0,
@@ -307,6 +372,10 @@ function applyLayoutStep() {
     ]),
   );
 
+  function clampValue(value, min, max) {
+    return Math.min(Math.max(value, min), max);
+  }
+
   function addDelta(word, x, y, z) {
     const delta = deltas.get(word);
     if (!delta) return;
@@ -315,110 +384,120 @@ function applyLayoutStep() {
     if (is3d) delta.z += z;
   }
 
-  for (const key of state.activeEdgeKeys) {
-    const edge = state.edges.get(key);
-    if (!edge) continue;
+  function getPairVector(a, b, firstIndex, secondIndex) {
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let dz = is3d ? b.z - a.z : 0;
+    let distance = Math.hypot(dx, dy, dz);
 
+    if (distance < 0.0001) {
+      const seed = (firstIndex + 1) * 97 + (secondIndex + 1) * 37 + a.word.length * 11 + b.word.length * 19;
+      const angle = seed * 0.017;
+      dx = Math.cos(angle) * 0.0001;
+      dy = Math.sin(angle) * 0.0001;
+      dz = is3d ? Math.sin(angle * 0.7) * 0.0001 : 0;
+      distance = Math.hypot(dx, dy, dz);
+    }
+
+    return {
+      dx,
+      dy,
+      dz,
+      distance,
+      nx: dx / distance,
+      ny: dy / distance,
+      nz: dz / distance,
+    };
+  }
+
+  // Пружины по накопленным связям. Они работают не только для текущего окна,
+  // поэтому уже найденные тематические группы продолжают собираться в кластеры.
+  for (const [key, edge] of state.edges) {
     const a = state.words.get(edge.first);
     const b = state.words.get(edge.second);
     if (!a || !b || a === b) continue;
 
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dz = is3d ? b.z - a.z : 0;
-    const distance = Math.hypot(dx, dy, dz) || 0.0001;
-    const nx = dx / distance;
-    const ny = dy / distance;
-    const nz = dz / distance;
-    const target = minDistance;
-    const pull = Math.min(Math.max(distance - target, 0) * 0.5, attractionStep);
+    const relatedness = getRelatedness(edge.first, edge.second);
+    if (relatedness <= 0) continue;
 
-    addDelta(edge.first, nx * pull, ny * pull, nz * pull);
-    addDelta(edge.second, -nx * pull, -ny * pull, -nz * pull);
+    const vector = getPairVector(a, b, edge.first.length, edge.second.length);
+    const target = clusterDistance * (0.88 + (1 - relatedness) * 1.6);
+    const activeBoost = state.activeEdgeKeys.has(key) ? 1.45 : 1;
+    const spring =
+      (vector.distance - target) * attractionRate * (0.45 + relatedness) * activeBoost;
+    const force = clampValue(spring, -repulsionRate * 0.8, attractionRate * 2.4);
 
-    edge.weight *= 0.9995;
+    addDelta(edge.first, vector.nx * force, vector.ny * force, vector.nz * force);
+    addDelta(edge.second, -vector.nx * force, -vector.ny * force, -vector.nz * force);
   }
 
-  for (let firstIndex = 0; firstIndex < activeNames.length; firstIndex += 1) {
-    const first = activeNames[firstIndex];
+  // Отталкивание рассматривает все пары слов. Для больших текстов пары берутся
+  // фазами, чтобы интерфейс оставался отзывчивым.
+  const totalPairs = (wordNames.length * (wordNames.length - 1)) / 2;
+  const pairStride = totalPairs > maxLayoutPairsPerStep ? Math.ceil(totalPairs / maxLayoutPairsPerStep) : 1;
+  const pairPhase = pairStride > 1 ? state.cursor % pairStride : 0;
+  let pairOrdinal = 0;
+
+  for (let firstIndex = 0; firstIndex < wordNames.length; firstIndex += 1) {
+    const first = wordNames[firstIndex];
     const a = state.words.get(first);
-    for (let secondIndex = firstIndex + 1; secondIndex < activeNames.length; secondIndex += 1) {
-      const second = activeNames[secondIndex];
+    if (!a) continue;
+
+    for (let secondIndex = firstIndex + 1; secondIndex < wordNames.length; secondIndex += 1) {
+      const includePair = pairStride === 1 || pairOrdinal % pairStride === pairPhase;
+      pairOrdinal += 1;
+      if (!includePair) continue;
+
+      const second = wordNames[secondIndex];
       const b = state.words.get(second);
-      if (!a || !b) continue;
+      if (!b) continue;
 
-      let dx = b.x - a.x;
-      let dy = b.y - a.y;
-      let dz = is3d ? b.z - a.z : 0;
-      let distance = Math.hypot(dx, dy, dz);
+      const relatedness = getRelatedness(first, second);
+      const target = clusterDistance + (1 - relatedness) * (separationDistance - clusterDistance);
+      const vector = getPairVector(a, b, firstIndex, secondIndex);
+      if (vector.distance >= target) continue;
 
-      if (distance < 0.0001) {
-        const angle = (firstIndex * 97 + secondIndex * 37) * 0.017;
-        dx = Math.cos(angle) * 0.0001;
-        dy = Math.sin(angle) * 0.0001;
-        dz = is3d ? Math.sin(angle * 0.7) * 0.0001 : 0;
-        distance = Math.hypot(dx, dy, dz);
-      }
+      const unrelatedness = Math.pow(1 - relatedness, 1.55);
+      const activeBoost = activeSet.has(first) || activeSet.has(second) ? 1.18 : 1;
+      const push =
+        Math.min((target - vector.distance) * repulsionRate * (0.35 + unrelatedness), repulsionRate * 2.6) *
+        activeBoost;
 
-      if (distance >= spacing) continue;
+      if (push <= 0) continue;
 
-      const nx = dx / distance;
-      const ny = dy / distance;
-      const nz = dz / distance;
-      const push = Math.min((spacing - distance) * 0.5, repulsionStep);
-
-      addDelta(first, -nx * push, -ny * push, -nz * push);
-      addDelta(second, nx * push, ny * push, nz * push);
+      addDelta(first, -vector.nx * push, -vector.ny * push, -vector.nz * push);
+      addDelta(second, vector.nx * push, vector.ny * push, vector.nz * push);
     }
   }
 
-  for (const activeName of activeNames) {
-    const activeWord = state.words.get(activeName);
-    if (!activeWord) continue;
-
-    for (const [otherName, otherWord] of state.words) {
-      if (activeSet.has(otherName)) continue;
-
-      let dx = otherWord.x - activeWord.x;
-      let dy = otherWord.y - activeWord.y;
-      let dz = is3d ? otherWord.z - activeWord.z : 0;
-      let distance = Math.hypot(dx, dy, dz);
-
-      if (distance < 0.0001) {
-        const angle = (activeName.length * 97 + otherName.length * 37) * 0.017;
-        dx = Math.cos(angle) * 0.0001;
-        dy = Math.sin(angle) * 0.0001;
-        dz = is3d ? Math.sin(angle * 0.7) * 0.0001 : 0;
-        distance = Math.hypot(dx, dy, dz);
-      }
-
-      const nx = dx / distance;
-      const ny = dy / distance;
-      const nz = dz / distance;
-      const influence = (spacing / Math.max(distance, spacing)) ** 2;
-      const push = repulsionStep * influence;
-
-      addDelta(activeName, -nx * push, -ny * push, -nz * push);
-      if (push >= repulsionStep * 0.2) {
-        state.activeNegativePairs.push({
-          first: activeName,
-          second: otherName,
-        });
-      }
-    }
-  }
+  // Мягкое удержание около центра нужно не для масштаба пространства, а чтобы
+  // учебные примеры не улетали далеко при длительной обработке.
+  const centerPull = 0.0009;
+  const maxDelta = Math.max(0.08, clusterDistance * 0.24);
 
   for (const [wordName, delta] of deltas) {
     const word = state.words.get(wordName);
     if (!word) continue;
 
+    delta.x -= word.x * centerPull;
+    delta.y -= word.y * centerPull;
+    if (is3d) delta.z -= word.z * centerPull;
+
+    const length = Math.hypot(delta.x, delta.y, is3d ? delta.z : 0);
+    if (length > maxDelta) {
+      const factor = maxDelta / length;
+      delta.x *= factor;
+      delta.y *= factor;
+      delta.z *= factor;
+    }
+
     word.x += delta.x;
     word.y += delta.y;
     word.z = is3d ? word.z + delta.z : 0;
 
-    clampAxis(word, "x", bounds.x);
-    clampAxis(word, "y", bounds.y);
-    if (is3d) clampAxis(word, "z", bounds.z);
+    clampAxis(word, "x", maxLayoutCoordinate);
+    clampAxis(word, "y", maxLayoutCoordinate);
+    if (is3d) clampAxis(word, "z", maxLayoutCoordinate);
   }
 }
 
@@ -445,8 +524,8 @@ function runSimulationSteps(dt) {
 function project2d(point) {
   const scale = getCoordinateScale();
   return {
-    x: state.width / 2 + point.x * scale,
-    y: state.height / 2 + point.y * scale,
+    x: state.width / 2 + (point.x - state.viewX) * scale,
+    y: state.height / 2 + (point.y - state.viewY) * scale,
     depth: 0,
     scale: 1,
   };
@@ -467,7 +546,29 @@ function rotate3d(point) {
 }
 
 function getCoordinateScale() {
-  return (Math.min(state.width, state.height) * 0.44 * state.spaceScale) / coordinateLimit;
+  const basis = Math.max(1, Math.min(state.width || 1, state.height || 1));
+  return (basis * 0.9 * state.spaceScale) / placementSize;
+}
+
+function getVisible2dBounds(padding = 0) {
+  const scale = getCoordinateScale();
+  const halfWidth = state.width / (2 * scale);
+  const halfHeight = state.height / (2 * scale);
+
+  return {
+    left: state.viewX - halfWidth - padding,
+    right: state.viewX + halfWidth + padding,
+    top: state.viewY - halfHeight - padding,
+    bottom: state.viewY + halfHeight + padding,
+  };
+}
+
+function getAxisLimit() {
+  const bounds = getVisible2dBounds(0);
+  return Math.max(
+    placementLimit,
+    Math.ceil(Math.max(Math.abs(bounds.left), Math.abs(bounds.right), Math.abs(bounds.top), Math.abs(bounds.bottom))),
+  );
 }
 
 function project3d(point) {
@@ -477,8 +578,8 @@ function project3d(point) {
   const scale = getCoordinateScale();
 
   return {
-    x: state.width / 2 + rotated.x * scale * perspective,
-    y: state.height / 2 + rotated.y * scale * perspective,
+    x: state.width / 2 + (rotated.x - state.viewX) * scale * perspective,
+    y: state.height / 2 + (rotated.y - state.viewY) * scale * perspective,
     depth: rotated.z,
     scale: perspective,
   };
@@ -496,63 +597,70 @@ function drawGrid() {
   ctx.strokeStyle = "#e3e8f1";
 
   if (state.mode === "2d") {
-    ctx.strokeStyle = "#e3e8f1";
-    for (let value = -coordinateLimit; value <= coordinateLimit; value += 1) {
-      const xLineStart = project2d({ x: value, y: -coordinateLimit });
-      const xLineEnd = project2d({ x: value, y: coordinateLimit });
-      ctx.beginPath();
-      ctx.moveTo(xLineStart.x, xLineStart.y);
-      ctx.lineTo(xLineEnd.x, xLineEnd.y);
-      ctx.stroke();
+    const bounds = getVisible2dBounds(1);
+    const xStart = Math.floor(bounds.left / gridStep) * gridStep;
+    const xEnd = Math.ceil(bounds.right / gridStep) * gridStep;
+    const yStart = Math.floor(bounds.top / gridStep) * gridStep;
+    const yEnd = Math.ceil(bounds.bottom / gridStep) * gridStep;
 
-      const yLineStart = project2d({ x: -coordinateLimit, y: value });
-      const yLineEnd = project2d({ x: coordinateLimit, y: value });
+    ctx.strokeStyle = "#e3e8f1";
+    for (let value = xStart; value <= xEnd; value += gridStep) {
+      const lineStart = project2d({ x: value, y: bounds.top });
+      const lineEnd = project2d({ x: value, y: bounds.bottom });
       ctx.beginPath();
-      ctx.moveTo(yLineStart.x, yLineStart.y);
-      ctx.lineTo(yLineEnd.x, yLineEnd.y);
+      ctx.moveTo(lineStart.x, lineStart.y);
+      ctx.lineTo(lineEnd.x, lineEnd.y);
+      ctx.stroke();
+    }
+
+    for (let value = yStart; value <= yEnd; value += gridStep) {
+      const lineStart = project2d({ x: bounds.left, y: value });
+      const lineEnd = project2d({ x: bounds.right, y: value });
+      ctx.beginPath();
+      ctx.moveTo(lineStart.x, lineStart.y);
+      ctx.lineTo(lineEnd.x, lineEnd.y);
       ctx.stroke();
     }
 
     ctx.strokeStyle = "#b9c4d7";
-    const xAxisStart = project2d({ x: -coordinateLimit, y: 0 });
-    const xAxisEnd = project2d({ x: coordinateLimit, y: 0 });
-    const yAxisStart = project2d({ x: 0, y: -coordinateLimit });
-    const yAxisEnd = project2d({ x: 0, y: coordinateLimit });
     ctx.beginPath();
-    ctx.moveTo(xAxisStart.x, xAxisStart.y);
-    ctx.lineTo(xAxisEnd.x, xAxisEnd.y);
-    ctx.moveTo(yAxisStart.x, yAxisStart.y);
-    ctx.lineTo(yAxisEnd.x, yAxisEnd.y);
+    if (bounds.top <= 0 && bounds.bottom >= 0) {
+      const xAxisStart = project2d({ x: bounds.left, y: 0 });
+      const xAxisEnd = project2d({ x: bounds.right, y: 0 });
+      ctx.moveTo(xAxisStart.x, xAxisStart.y);
+      ctx.lineTo(xAxisEnd.x, xAxisEnd.y);
+    }
+    if (bounds.left <= 0 && bounds.right >= 0) {
+      const yAxisStart = project2d({ x: 0, y: bounds.top });
+      const yAxisEnd = project2d({ x: 0, y: bounds.bottom });
+      ctx.moveTo(yAxisStart.x, yAxisStart.y);
+      ctx.lineTo(yAxisEnd.x, yAxisEnd.y);
+    }
     ctx.stroke();
-
-    ctx.fillStyle = "#657086";
-    ctx.font = "12px Inter, system-ui, sans-serif";
-    ctx.fillText("-10", xAxisStart.x - 18, xAxisStart.y - 6);
-    ctx.fillText("10", xAxisEnd.x + 6, xAxisEnd.y - 6);
-    ctx.fillText("10", yAxisEnd.x + 7, yAxisEnd.y + 4);
-    ctx.fillText("-10", yAxisStart.x + 7, yAxisStart.y + 4);
   } else {
+    const axisLimit = getAxisLimit();
     const axes = [
       {
         color: "#0b6f85",
-        from: { x: -coordinateLimit, y: 0, z: 0 },
-        to: { x: coordinateLimit, y: 0, z: 0 },
+        from: { x: -axisLimit, y: 0, z: 0 },
+        to: { x: axisLimit, y: 0, z: 0 },
         label: "X",
       },
       {
         color: "#d35f2d",
-        from: { x: 0, y: -coordinateLimit, z: 0 },
-        to: { x: 0, y: coordinateLimit, z: 0 },
+        from: { x: 0, y: -axisLimit, z: 0 },
+        to: { x: 0, y: axisLimit, z: 0 },
         label: "Y",
       },
       {
         color: "#667085",
-        from: { x: 0, y: 0, z: -coordinateLimit },
-        to: { x: 0, y: 0, z: coordinateLimit },
+        from: { x: 0, y: 0, z: -axisLimit },
+        to: { x: 0, y: 0, z: axisLimit },
         label: "Z",
       },
     ];
 
+    ctx.font = "12px Inter, system-ui, sans-serif";
     for (const axis of axes) {
       const from = project3d(axis.from);
       const to = project3d(axis.to);
@@ -570,62 +678,11 @@ function drawGrid() {
   ctx.restore();
 }
 
-function drawActiveEdges(projected) {
-  if (!state.activeEdgeKeys.size) return;
-
-  ctx.save();
-  ctx.lineWidth = 2.4;
-  ctx.strokeStyle = "rgba(211, 95, 45, 0.28)";
-
-  for (const key of state.activeEdgeKeys) {
-    const edge = state.edges.get(key);
-    if (!edge) continue;
-
-    const a = projected.get(edge.first);
-    const b = projected.get(edge.second);
-    if (!a || !b || edge.first === edge.second) continue;
-
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-
-  ctx.restore();
-}
-
-function drawNegativeEdges(projected) {
-  if (!state.activeNegativePairs.length) return;
-
-  ctx.save();
-  ctx.lineWidth = 1.6;
-  ctx.strokeStyle = "rgba(11, 111, 133, 0.22)";
-  ctx.setLineDash([6, 5]);
-
-  for (const pair of state.activeNegativePairs) {
-    const a = projected.get(pair.first);
-    const b = projected.get(pair.second);
-    if (!a || !b || pair.first === pair.second) continue;
-
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-
-  ctx.restore();
-}
-
 function drawWords() {
   const activeSet = new Set(state.activeTokens);
   const entries = [...state.words.values()]
     .map((word) => ({ word, screen: project(word) }))
     .sort((a, b) => a.screen.depth - b.screen.depth);
-  const projected = new Map(entries.map((entry) => [entry.word.word, entry.screen]));
-
-  drawNegativeEdges(projected);
-  drawActiveEdges(projected);
-
   ctx.save();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -734,9 +791,11 @@ function updateStatus(message) {
   if (message) {
     graphHint.textContent = message;
   } else if (state.running) {
-    graphHint.textContent = "Идет обработка: оранжевые линии сближают, пунктир показывает отталкивание от внешних слов.";
+    graphHint.textContent =
+      "Идет обработка: устойчивые соседи стягиваются пружинами, неродственные пары расходятся. " +
+      getNavigationHint();
   } else {
-    graphHint.textContent = "Обновите слова, затем запустите обработку окна.";
+    graphHint.textContent = `Обновите слова, затем запустите обработку окна. ${getNavigationHint()}`;
   }
 
   if (state.running && state.activeTokens.length) {
@@ -757,6 +816,10 @@ function startProcessing() {
   state.cursor = 0;
   state.stepAccumulator = 0;
   state.edges.clear();
+  state.wordMass.clear();
+  state.pairTotal = 0;
+  state.maxPpmi = 0;
+  state.maxEdgeMass = 0;
   state.activeEdgeKeys.clear();
   state.activeTokens = buildActiveWindow();
   startButton.disabled = true;
@@ -768,11 +831,16 @@ function stopProcessing() {
   state.running = false;
   state.activeTokens = [];
   state.activeEdgeKeys.clear();
-  state.activeNegativePairs = [];
   state.stepAccumulator = 0;
   startButton.disabled = false;
   stopButton.disabled = true;
   updateStatus("Обработка остановлена: положение заморожено");
+}
+
+function getNavigationHint() {
+  return state.mode === "3d"
+    ? "Колесо — масштаб. Перетаскивание — поворот. Shift или правая кнопка — сдвиг."
+    : "Колесо — масштаб. Перетаскивание — сдвиг пространства.";
 }
 
 function setMode(mode) {
@@ -788,18 +856,57 @@ function setMode(mode) {
   });
   graphHint.textContent =
     mode === "3d"
-      ? "3D режим: перетащите граф мышью, чтобы повернуть пространство."
-      : "2D режим: расчет идет только в плоскости X/Y.";
+      ? `3D режим: расчет идет в X/Y/Z. ${getNavigationHint()}`
+      : `2D режим: расчет идет только в плоскости X/Y. ${getNavigationHint()}`;
 }
 
 function clampSpaceScale(value) {
   return Math.min(Math.max(value, minSpaceScale), maxSpaceScale);
 }
 
+function getCanvasPointFromClient(clientX, clientY) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: clientX - rect.left,
+    y: clientY - rect.top,
+  };
+}
+
+function getCanvasPoint(event) {
+  return getCanvasPointFromClient(event.clientX, event.clientY);
+}
+
+function screenToViewWorld(screenX, screenY) {
+  const scale = getCoordinateScale();
+  return {
+    x: state.viewX + (screenX - state.width / 2) / scale,
+    y: state.viewY + (screenY - state.height / 2) / scale,
+  };
+}
+
+function zoomAtCanvasPoint(nextScale, point) {
+  const worldBefore = screenToViewWorld(point.x, point.y);
+  state.spaceScale = clampSpaceScale(nextScale);
+  const scaleAfter = getCoordinateScale();
+  state.viewX = worldBefore.x - (point.x - state.width / 2) / scaleAfter;
+  state.viewY = worldBefore.y - (point.y - state.height / 2) / scaleAfter;
+}
+
+function resetView() {
+  state.viewX = 0;
+  state.viewY = 0;
+  state.spaceScale = 1;
+}
+
 function getPinchDistance() {
   if (state.pointers.size < 2) return 0;
   const points = [...state.pointers.values()];
   return Math.hypot(points[1].x - points[0].x, points[1].y - points[0].y);
+}
+
+function getPinchCenter() {
+  const points = [...state.pointers.values()];
+  return getCanvasPointFromClient((points[0].x + points[1].x) / 2, (points[0].y + points[1].y) / 2);
 }
 
 function startPinch() {
@@ -813,6 +920,12 @@ function startPinch() {
 }
 
 function handlePointerDown(event) {
+  event.preventDefault();
+  try {
+    canvas.focus({ preventScroll: true });
+  } catch {
+    canvas.focus();
+  }
   canvas.setPointerCapture(event.pointerId);
   state.pointers.set(event.pointerId, {
     x: event.clientX,
@@ -824,12 +937,16 @@ function handlePointerDown(event) {
     return;
   }
 
-  if (state.mode !== "3d") return;
+  const shouldRotate =
+    state.mode === "3d" && event.button === 0 && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey;
 
   state.drag = {
+    kind: shouldRotate ? "rotate" : "pan",
     pointerId: event.pointerId,
     x: event.clientX,
     y: event.clientY,
+    viewX: state.viewX,
+    viewY: state.viewY,
     angleX: state.angleX,
     angleY: state.angleY,
   };
@@ -846,7 +963,7 @@ function handlePointerMove(event) {
   if (state.pinch && state.pointers.size >= 2) {
     const distance = getPinchDistance();
     if (distance) {
-      state.spaceScale = clampSpaceScale(state.pinch.scale * (distance / state.pinch.distance));
+      zoomAtCanvasPoint(state.pinch.scale * (distance / state.pinch.distance), getPinchCenter());
     }
     return;
   }
@@ -854,6 +971,14 @@ function handlePointerMove(event) {
   if (!state.drag || state.drag.pointerId !== event.pointerId) return;
   const dx = event.clientX - state.drag.x;
   const dy = event.clientY - state.drag.y;
+
+  if (state.drag.kind === "pan") {
+    const scale = getCoordinateScale();
+    state.viewX = state.drag.viewX - dx / scale;
+    state.viewY = state.drag.viewY - dy / scale;
+    return;
+  }
+
   state.angleY = state.drag.angleY + dx * 0.01;
   state.angleX = Math.max(-1.35, Math.min(1.35, state.drag.angleX + dy * 0.01));
 }
@@ -871,11 +996,53 @@ function handlePointerUp(event) {
 }
 
 function handleCanvasWheel(event) {
-  if (!event.ctrlKey && !event.metaKey) return;
   event.preventDefault();
-  const direction = event.deltaY > 0 ? -1 : 1;
-  const zoomFactor = 1 + direction * 0.08;
-  state.spaceScale = clampSpaceScale(state.spaceScale * zoomFactor);
+  const point = getCanvasPoint(event);
+  const modeMultiplier = event.deltaMode === 1 ? 0.055 : 0.0014;
+  const zoomFactor = Math.exp(-event.deltaY * modeMultiplier);
+  zoomAtCanvasPoint(state.spaceScale * zoomFactor, point);
+}
+
+function handleCanvasDoubleClick(event) {
+  event.preventDefault();
+  resetView();
+  updateStatus("Навигация сброшена: центр и масштаб вернулись к стартовым значениям");
+}
+
+function handleCanvasKeyDown(event) {
+  const panStep = (event.shiftKey ? 1.2 : 0.45) / state.spaceScale;
+  const center = { x: state.width / 2, y: state.height / 2 };
+
+  switch (event.key) {
+    case "ArrowLeft":
+      state.viewX -= panStep;
+      break;
+    case "ArrowRight":
+      state.viewX += panStep;
+      break;
+    case "ArrowUp":
+      state.viewY -= panStep;
+      break;
+    case "ArrowDown":
+      state.viewY += panStep;
+      break;
+    case "+":
+    case "=":
+      zoomAtCanvasPoint(state.spaceScale * 1.12, center);
+      break;
+    case "-":
+    case "_":
+      zoomAtCanvasPoint(state.spaceScale / 1.12, center);
+      break;
+    case "0":
+      resetView();
+      updateStatus("Навигация сброшена: центр и масштаб вернулись к стартовым значениям");
+      break;
+    default:
+      return;
+  }
+
+  event.preventDefault();
 }
 
 addWordsButton.addEventListener("click", () => updateWordsFromText());
@@ -902,11 +1069,15 @@ document.querySelectorAll(".mode-button").forEach((button) => {
   button.addEventListener("click", () => setMode(button.dataset.mode));
 });
 
+canvas.tabIndex = 0;
 canvas.addEventListener("pointerdown", handlePointerDown);
 canvas.addEventListener("pointermove", handlePointerMove);
 canvas.addEventListener("pointerup", handlePointerUp);
 canvas.addEventListener("pointercancel", handlePointerUp);
 canvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
+canvas.addEventListener("dblclick", handleCanvasDoubleClick);
+canvas.addEventListener("keydown", handleCanvasKeyDown);
+canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 
 window.addEventListener("resize", resizeCanvas);
 

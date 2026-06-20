@@ -152,7 +152,7 @@ button:disabled {
 
 .template-switch {
   display: inline-grid;
-  grid-template-columns: repeat(4, minmax(86px, 1fr));
+  grid-template-columns: repeat(5, minmax(76px, 1fr));
   gap: 4px;
   padding: 4px;
   border: 1px solid var(--line);
@@ -347,7 +347,7 @@ input {
 
   .template-switch {
     width: 100%;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
 
   .canvas-wrap {

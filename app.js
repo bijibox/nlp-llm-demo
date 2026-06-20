@@ -23,6 +23,8 @@ const placementSize = 10;
 const placementLimit = placementSize / 2;
 const maxLayoutCoordinate = 80;
 const maxLayoutPairsPerStep = 2600;
+const maxNegativeSamplesPerActiveWord = 5;
+const maxExplicitNegativePairsPerStep = 48;
 const gridStep = 1;
 
 const state = {
@@ -32,9 +34,11 @@ const state = {
   tokenLines: [],
   running: false,
   cursor: 0,
+  layoutStep: 0,
   stepAccumulator: 0,
   activeTokens: [],
   activePairKeys: new Set(),
+  negativePairEvents: [],
   width: 0,
   height: 0,
   dpr: 1,
@@ -70,6 +74,33 @@ function tokenizeTextByLine(text) {
 
 function tokenize(text) {
   return tokenizeTextByLine(text).flat();
+}
+
+function parseTextTraining(text) {
+  const tokenLines = [];
+  const negativePairEvents = [];
+  const negativeMarkerPattern = /(^|\s)(?:!=|≠|!)(?=\s|$)/;
+
+  for (const rawLine of text.split(/\r\n?|\n/)) {
+    const tokens = tokenizeLine(rawLine);
+    if (!tokens.length) {
+      tokenLines.push([]);
+      continue;
+    }
+
+    if (negativeMarkerPattern.test(rawLine) && tokens.length >= 2) {
+      for (let index = 0; index < tokens.length - 1; index += 2) {
+        const first = tokens[index];
+        const second = tokens[index + 1];
+        if (first !== second) negativePairEvents.push({ first, second });
+      }
+      continue;
+    }
+
+    tokenLines.push(tokens);
+  }
+
+  return { tokenLines, negativePairEvents };
 }
 
 function clampNumber(input, fallback) {
@@ -136,9 +167,17 @@ function buildWordUpdateMessage(added, removed, stoppedProcessing) {
 }
 
 function updateWordsFromText({ announce = true, resetCursor = true } = {}) {
-  state.tokenLines = tokenizeTextByLine(textInput.value);
+  const training = parseTextTraining(textInput.value);
+  state.tokenLines = training.tokenLines;
   state.tokens = state.tokenLines.flat();
+  state.negativePairEvents = training.negativePairEvents;
+
   const wordsInText = new Set(state.tokens);
+  for (const pair of state.negativePairEvents) {
+    wordsInText.add(pair.first);
+    wordsInText.add(pair.second);
+  }
+
   let added = 0;
 
   for (const token of wordsInText) {
@@ -157,6 +196,7 @@ function updateWordsFromText({ announce = true, resetCursor = true } = {}) {
 
   if (resetCursor) {
     state.cursor = 0;
+    state.layoutStep = 0;
   } else {
     const cursorLimit = getCursorLimit();
     if (state.cursor >= cursorLimit) state.cursor = cursorLimit ? state.cursor % cursorLimit : 0;
@@ -199,6 +239,7 @@ function randomizeWords() {
   }
 
   if (state.mode === "2d") flattenTo2d();
+  state.layoutStep = 0;
   resetView();
   updateStatus("Слова случайно разбросаны в стартовой области 10×10");
 }
@@ -338,16 +379,36 @@ function clampAxis(word, positionKey, limit) {
   }
 }
 
+function hashString(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function nextHash(seed) {
+  return (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+}
+
+function getNegativeSampleCount() {
+  return Math.max(1, Math.min(maxNegativeSamplesPerActiveWord, Math.round(1 + getRepulsionStep() * 4)));
+}
+
 function applyLayoutStep() {
   const wordNames = [...state.words.keys()];
   if (wordNames.length < 2) return;
 
   const is3d = state.mode === "3d";
-  const attractionRate = getMovementStep() * 0.085;
-  const repulsionRate = getRepulsionStep() * 0.08;
+  const attractionRate = getMovementStep() * 0.075;
+  const repulsionRate = getRepulsionStep() * 0.055;
   const minDistance = getMinDistance();
   const clusterDistance = Math.max(minDistance, 0.35);
-  const separationDistance = clusterDistance * 3.6;
+  const negativeDistance = clusterDistance * (3.6 + getRepulsionStep() * 1.35);
+  const explicitNegativeDistance = clusterDistance * (4.5 + getRepulsionStep() * 1.55);
+  const collisionDistance = clusterDistance * 0.92;
+  const negativeSampleCount = getNegativeSampleCount();
   const activeSet = new Set(state.activeTokens);
   const activePairs = buildActivePairs();
   const activePairStrength = new Map(activePairs.map((pair) => [getPairKey(pair.first, pair.second), pair.strength]));
@@ -408,16 +469,69 @@ function applyLayoutStep() {
     if (!a || !b || a === b) continue;
 
     const vector = getPairVector(a, b, pair.first.length, pair.second.length);
-    const target = clusterDistance * (0.82 + (1 - pair.strength) * 0.65);
-    const spring = (vector.distance - target) * attractionRate * (0.75 + pair.strength * 0.65);
-    const force = clampValue(spring, -repulsionRate * 0.45, attractionRate * 2.3);
+    const target = clusterDistance * (0.94 + (1 - pair.strength) * 0.56);
+    const spring = (vector.distance - target) * attractionRate * (0.7 + pair.strength * 0.75);
+    const force = clampValue(spring, -repulsionRate * 0.25, attractionRate * 2.8);
 
     addDelta(pair.first, vector.nx * force, vector.ny * force, vector.nz * force);
     addDelta(pair.second, -vector.nx * force, -vector.ny * force, -vector.nz * force);
   }
 
-  // Отрицательные примеры: активные слова отталкиваются от слов вне текущего окна.
-  // Для неактивных пар остается только слабая защита от схлопывания в одну точку.
+  function pushPairApart(first, second, target, scale, cap) {
+    const a = state.words.get(first);
+    const b = state.words.get(second);
+    if (!a || !b || a === b) return;
+
+    const vector = getPairVector(a, b, first.length, second.length);
+    if (vector.distance >= target) return;
+
+    const push = Math.min((target - vector.distance) * repulsionRate * scale, repulsionRate * cap);
+    if (push <= 0) return;
+
+    addDelta(first, -vector.nx * push, -vector.ny * push, -vector.nz * push);
+    addDelta(second, vector.nx * push, vector.ny * push, vector.nz * push);
+  }
+
+  // Отрицательные примеры теперь не перебирают все неактивные слова.
+  // Это важно: иначе почти каждая родственная пара чаще получает отталкивание,
+  // чем притяжение, потому что два слова редко активны одновременно.
+  const uniqueActiveWords = [...activeSet].filter((word) => state.words.has(word));
+
+  for (const word of uniqueActiveWords) {
+    let seed = hashString(`${word}\u0000${state.layoutStep}`);
+    const usedSamples = new Set([word, ...activeSet]);
+    let picked = 0;
+    let attempts = 0;
+
+    while (picked < negativeSampleCount && attempts < wordNames.length * 3 && usedSamples.size < wordNames.length) {
+      seed = nextHash(seed);
+      attempts += 1;
+
+      const candidate = wordNames[seed % wordNames.length];
+      if (usedSamples.has(candidate)) continue;
+      if (activePairStrength.has(getPairKey(word, candidate))) continue;
+
+      pushPairApart(word, candidate, negativeDistance, 0.34, 1.15);
+      usedSamples.add(candidate);
+      picked += 1;
+    }
+  }
+
+  // Явные отрицательные обучающие события: строки вида "лево != право".
+  // Это не постоянные ребра графа; это такие же временные тренировочные события,
+  // как обычные положительные окна, только с обратным знаком.
+  if (state.negativePairEvents.length) {
+    const limit = Math.min(state.negativePairEvents.length, maxExplicitNegativePairsPerStep);
+    const startIndex = state.layoutStep % state.negativePairEvents.length;
+
+    for (let offset = 0; offset < limit; offset += 1) {
+      const pair = state.negativePairEvents[(startIndex + offset) % state.negativePairEvents.length];
+      pushPairApart(pair.first, pair.second, explicitNegativeDistance, 1.05, 1.8);
+    }
+  }
+
+  // Коллизионное отталкивание остается глобальным, но слабым и коротким.
+  // Оно не должно учить семантике; оно только не дает точкам схлопнуться.
   const totalPairs = (wordNames.length * (wordNames.length - 1)) / 2;
   const pairStride = totalPairs > maxLayoutPairsPerStep ? Math.ceil(totalPairs / maxLayoutPairsPerStep) : 1;
   const pairPhase = pairStride > 1 ? state.cursor % pairStride : 0;
@@ -438,20 +552,12 @@ function applyLayoutStep() {
       if (!b) continue;
 
       const key = getPairKey(first, second);
-      const positiveStrength = activePairStrength.get(key) || 0;
-      const firstActive = activeSet.has(first);
-      const secondActive = activeSet.has(second);
-      const isNegativeSample = !positiveStrength && firstActive !== secondActive;
-      const target = positiveStrength
-        ? clusterDistance * 0.74
-        : isNegativeSample
-          ? separationDistance
-          : clusterDistance * 1.08;
       const vector = getPairVector(a, b, firstIndex, secondIndex);
-      if (vector.distance >= target) continue;
+      if (vector.distance >= collisionDistance) continue;
 
-      const scale = positiveStrength ? 0.18 : isNegativeSample ? 1 : 0.24;
-      const push = Math.min((target - vector.distance) * repulsionRate * scale, repulsionRate * 2.2);
+      const isPositiveNow = activePairStrength.has(key);
+      const scale = isPositiveNow ? 0.06 : 0.16;
+      const push = Math.min((collisionDistance - vector.distance) * repulsionRate * scale, repulsionRate * 0.35);
       if (push <= 0) continue;
 
       addDelta(first, -vector.nx * push, -vector.ny * push, -vector.nz * push);
@@ -461,8 +567,8 @@ function applyLayoutStep() {
 
   // Мягкое удержание около центра нужно не для масштаба пространства, а чтобы
   // учебные примеры не улетали далеко при длительной обработке.
-  const centerPull = 0.00075;
-  const maxDelta = Math.max(0.08, clusterDistance * 0.24);
+  const centerPull = 0.0005;
+  const maxDelta = Math.max(0.075, clusterDistance * 0.22);
 
   for (const [wordName, delta] of deltas) {
     const word = state.words.get(wordName);
@@ -488,6 +594,8 @@ function applyLayoutStep() {
     clampAxis(word, "y", maxLayoutCoordinate);
     if (is3d) clampAxis(word, "z", maxLayoutCoordinate);
   }
+
+  state.layoutStep += 1;
 }
 
 function runSimulationSteps(dt) {
@@ -784,7 +892,7 @@ function updateStatus(message) {
     graphHint.textContent = message;
   } else if (state.running) {
     graphHint.textContent =
-      "Идет обработка: пары текущего окна временно сближаются, активные слова отталкиваются от отрицательных примеров. " +
+      "Идет обработка: пары текущего окна временно сближаются; случайные отрицательные примеры и строки с != раздвигают точки. " +
       getNavigationHint();
   } else {
     graphHint.textContent = `Обновите слова, затем запустите обработку окна. ${getNavigationHint()}`;
@@ -806,6 +914,7 @@ function startProcessing() {
 
   state.running = true;
   state.cursor = 0;
+  state.layoutStep = 0;
   state.stepAccumulator = 0;
   resetAssociations();
   state.activeTokens = buildActiveWindow();

@@ -436,7 +436,18 @@
 шаг влево
 шаг вправо
 шаг вверх
-шаг вниз</template>
+шаг вниз
+
+лево != право
+верх != низ
+запад != восток
+север != юг
+минусx != плюсx
+плюсy != минусy
+влево != вправо
+вверх != вниз
+северозапад != юговосток
+северовосток != югозапад</template>
         </div>
 
         <div class="control-grid">
@@ -456,28 +467,28 @@
             </label>
 
             <label class="toggle-control">
-              <input id="lineBreaksInput" type="checkbox" />
+              <input id="lineBreaksInput" type="checkbox" checked />
               <span>Не пересекать строки</span>
             </label>
 
             <label class="number-control">
               <span>Скорость, шаг/с</span>
-              <input id="speedInput" type="number" min="1" max="200" step="10" value="70" />
+              <input id="speedInput" type="number" min="1" max="200" step="10" value="90" />
             </label>
 
             <label class="number-control">
               <span>Сближение</span>
-              <input id="stepInput" type="number" min="0.0" max="1" step="0.05" value="0.55" />
+              <input id="stepInput" type="number" min="0.0" max="1" step="0.05" value="0.65" />
             </label>
 
             <label class="number-control">
               <span>Отталкивание</span>
-              <input id="repulsionInput" type="number" min="0.0" max="1" step="0.05" value="0.75" />
+              <input id="repulsionInput" type="number" min="0.0" max="1" step="0.05" value="0.85" />
             </label>
 
             <label class="number-control">
               <span>Минимальное расстояние</span>
-              <input id="minDistanceInput" type="number" min="0.4" max="4" step="0.1" value="0.9" />
+              <input id="minDistanceInput" type="number" min="0.4" max="4" step="0.1" value="1.1" />
             </label>
           </div>
         </div>

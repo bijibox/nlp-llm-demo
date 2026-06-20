@@ -28,18 +28,13 @@ const gridStep = 1;
 const state = {
   mode: "2d",
   words: new Map(),
-  edges: new Map(),
   tokens: [],
   tokenLines: [],
-  wordMass: new Map(),
-  pairTotal: 0,
-  maxPpmi: 0,
-  maxEdgeMass: 0,
   running: false,
   cursor: 0,
   stepAccumulator: 0,
   activeTokens: [],
-  activeEdgeKeys: new Set(),
+  activePairKeys: new Set(),
   width: 0,
   height: 0,
   dpr: 1,
@@ -113,22 +108,10 @@ function addWord(word) {
 }
 
 function pruneEdges(wordsInText) {
-  for (const [key, edge] of state.edges) {
-    if (!wordsInText.has(edge.first) || !wordsInText.has(edge.second)) {
-      removePairMass(edge);
-      state.edges.delete(key);
-    }
+  for (const key of [...state.activePairKeys]) {
+    const [first, second] = key.split("\u0000");
+    if (!wordsInText.has(first) || !wordsInText.has(second)) state.activePairKeys.delete(key);
   }
-
-  for (const word of [...state.wordMass.keys()]) {
-    if (!wordsInText.has(word)) state.wordMass.delete(word);
-  }
-
-  for (const key of [...state.activeEdgeKeys]) {
-    if (!state.edges.has(key)) state.activeEdgeKeys.delete(key);
-  }
-
-  recomputeAssociationMaxima();
 }
 
 function updateTemplateButtons() {
@@ -184,16 +167,16 @@ function updateWordsFromText({ announce = true, resetCursor = true } = {}) {
     state.running = false;
     state.stepAccumulator = 0;
     state.activeTokens = [];
-    state.activeEdgeKeys.clear();
+    state.activePairKeys.clear();
     startButton.disabled = false;
     stopButton.disabled = true;
     stoppedProcessing = true;
   } else if (state.running) {
     state.activeTokens = buildActiveWindow();
-    state.activeEdgeKeys.clear();
+    state.activePairKeys.clear();
   } else {
     state.activeTokens = [];
-    state.activeEdgeKeys.clear();
+    state.activePairKeys.clear();
   }
 
   updateTemplateButtons();
@@ -293,77 +276,17 @@ function buildActiveWindow() {
   return shouldKeepWindowsWithinLine() ? buildLineBoundedActiveWindow() : buildFlatActiveWindow();
 }
 
-function getEdgeKey(first, second) {
+function getPairKey(first, second) {
   return first < second ? `${first}\u0000${second}` : `${second}\u0000${first}`;
 }
 
-function removePairMass(edge) {
-  state.pairTotal = Math.max(0, state.pairTotal - edge.mass);
-  for (const word of [edge.first, edge.second]) {
-    const mass = state.wordMass.get(word);
-    if (mass === undefined) continue;
-    const next = mass - edge.mass;
-    if (next > 0.000001) {
-      state.wordMass.set(word, next);
-    } else {
-      state.wordMass.delete(word);
-    }
-  }
-}
-
-function addPairMass(first, second, mass) {
-  state.pairTotal += mass;
-  state.wordMass.set(first, (state.wordMass.get(first) || 0) + mass);
-  state.wordMass.set(second, (state.wordMass.get(second) || 0) + mass);
-}
-
-function recomputeAssociationMaxima() {
-  state.maxPpmi = 0;
-  state.maxEdgeMass = 0;
-
-  for (const edge of state.edges.values()) {
-    state.maxEdgeMass = Math.max(state.maxEdgeMass, edge.mass);
-    state.maxPpmi = Math.max(state.maxPpmi, getPpmi(edge.first, edge.second));
-  }
-}
-
 function resetAssociations() {
-  state.edges.clear();
-  state.wordMass.clear();
-  state.pairTotal = 0;
-  state.maxPpmi = 0;
-  state.maxEdgeMass = 0;
-  state.activeEdgeKeys.clear();
+  state.activePairKeys.clear();
 }
 
-// PPMI: связь сильна, только если слова встречаются вместе чаще случайного.
-function getPpmi(first, second) {
-  const edge = state.edges.get(getEdgeKey(first, second));
-  if (!edge || !state.pairTotal) return 0;
-
-  const firstMass = state.wordMass.get(first);
-  const secondMass = state.wordMass.get(second);
-  if (!firstMass || !secondMass) return 0;
-
-  return Math.max(0, Math.log((edge.mass * state.pairTotal) / (firstMass * secondMass)));
-}
-
-// Связанность в [0, 1]: PPMI отделяет устойчивые контексты от частых случайных,
-// а частотная добавка ускоряет образование кластеров на небольших учебных текстах.
-function getRelatedness(first, second) {
-  const edge = state.edges.get(getEdgeKey(first, second));
-  if (!edge) return 0;
-
-  const ppmiScore = state.maxPpmi ? Math.min(getPpmi(first, second) / state.maxPpmi, 1) : 0;
-  const massScore = state.maxEdgeMass
-    ? Math.min(Math.log1p(edge.mass) / Math.log1p(state.maxEdgeMass), 1)
-    : 0;
-
-  return Math.max(ppmiScore, massScore * 0.62);
-}
-
-function reinforceActiveEdges() {
-  state.activeEdgeKeys.clear();
+function buildActivePairs() {
+  const pairs = new Map();
+  state.activePairKeys.clear();
 
   for (let index = 0; index < state.activeTokens.length - 1; index += 1) {
     for (let secondIndex = index + 1; secondIndex < state.activeTokens.length; secondIndex += 1) {
@@ -371,22 +294,25 @@ function reinforceActiveEdges() {
       const second = state.activeTokens[secondIndex];
       if (first === second) continue;
 
-      const key = getEdgeKey(first, second);
-      const edge = state.edges.get(key) || {
-        first,
-        second,
-        mass: 0,
-      };
-      const mass = 1 / (secondIndex - index);
-      edge.mass += mass;
-      addPairMass(first, second, mass);
-      state.edges.set(key, edge);
-      state.activeEdgeKeys.add(key);
+      const key = getPairKey(first, second);
+      const gap = secondIndex - index;
+      const strength = 1 / gap;
+      const current = pairs.get(key);
 
-      state.maxEdgeMass = Math.max(state.maxEdgeMass * 0.9999, edge.mass);
-      state.maxPpmi = Math.max(state.maxPpmi * 0.9999, getPpmi(first, second));
+      if (!current || strength > current.strength) {
+        pairs.set(key, { first, second, strength });
+      }
+      state.activePairKeys.add(key);
     }
   }
+
+  return [...pairs.values()];
+}
+
+// Нет постоянного графа связей. Эта функция только помечает пары текущего окна,
+// чтобы интерфейс и раскладка знали, какие слова взаимодействуют на данном шаге.
+function reinforceActiveEdges() {
+  buildActivePairs();
 }
 
 function flattenTo2d() {
@@ -417,12 +343,14 @@ function applyLayoutStep() {
   if (wordNames.length < 2) return;
 
   const is3d = state.mode === "3d";
-  const attractionRate = getMovementStep() * 0.075;
-  const repulsionRate = getRepulsionStep() * 0.085;
+  const attractionRate = getMovementStep() * 0.085;
+  const repulsionRate = getRepulsionStep() * 0.08;
   const minDistance = getMinDistance();
   const clusterDistance = Math.max(minDistance, 0.35);
-  const separationDistance = clusterDistance * 4.3;
+  const separationDistance = clusterDistance * 3.6;
   const activeSet = new Set(state.activeTokens);
+  const activePairs = buildActivePairs();
+  const activePairStrength = new Map(activePairs.map((pair) => [getPairKey(pair.first, pair.second), pair.strength]));
   const deltas = new Map(
     wordNames.map((word) => [
       word,
@@ -472,29 +400,24 @@ function applyLayoutStep() {
     };
   }
 
-  // Пружины по накопленным связям. Они работают не только для текущего окна,
-  // поэтому уже найденные тематические группы продолжают собираться в кластеры.
-  for (const [key, edge] of state.edges) {
-    const a = state.words.get(edge.first);
-    const b = state.words.get(edge.second);
+  // Положительные примеры: только пары из текущего окна временно притягиваются.
+  // Информация о прошлом не хранится в ребрах; она остается только в координатах слов.
+  for (const pair of activePairs) {
+    const a = state.words.get(pair.first);
+    const b = state.words.get(pair.second);
     if (!a || !b || a === b) continue;
 
-    const relatedness = getRelatedness(edge.first, edge.second);
-    if (relatedness <= 0) continue;
+    const vector = getPairVector(a, b, pair.first.length, pair.second.length);
+    const target = clusterDistance * (0.82 + (1 - pair.strength) * 0.65);
+    const spring = (vector.distance - target) * attractionRate * (0.75 + pair.strength * 0.65);
+    const force = clampValue(spring, -repulsionRate * 0.45, attractionRate * 2.3);
 
-    const vector = getPairVector(a, b, edge.first.length, edge.second.length);
-    const target = clusterDistance * (0.88 + (1 - relatedness) * 1.6);
-    const activeBoost = state.activeEdgeKeys.has(key) ? 1.45 : 1;
-    const spring =
-      (vector.distance - target) * attractionRate * (0.45 + relatedness) * activeBoost;
-    const force = clampValue(spring, -repulsionRate * 0.8, attractionRate * 2.4);
-
-    addDelta(edge.first, vector.nx * force, vector.ny * force, vector.nz * force);
-    addDelta(edge.second, -vector.nx * force, -vector.ny * force, -vector.nz * force);
+    addDelta(pair.first, vector.nx * force, vector.ny * force, vector.nz * force);
+    addDelta(pair.second, -vector.nx * force, -vector.ny * force, -vector.nz * force);
   }
 
-  // Отталкивание рассматривает все пары слов. Для больших текстов пары берутся
-  // фазами, чтобы интерфейс оставался отзывчивым.
+  // Отрицательные примеры: активные слова отталкиваются от слов вне текущего окна.
+  // Для неактивных пар остается только слабая защита от схлопывания в одну точку.
   const totalPairs = (wordNames.length * (wordNames.length - 1)) / 2;
   const pairStride = totalPairs > maxLayoutPairsPerStep ? Math.ceil(totalPairs / maxLayoutPairsPerStep) : 1;
   const pairPhase = pairStride > 1 ? state.cursor % pairStride : 0;
@@ -514,17 +437,21 @@ function applyLayoutStep() {
       const b = state.words.get(second);
       if (!b) continue;
 
-      const relatedness = getRelatedness(first, second);
-      const target = clusterDistance + (1 - relatedness) * (separationDistance - clusterDistance);
+      const key = getPairKey(first, second);
+      const positiveStrength = activePairStrength.get(key) || 0;
+      const firstActive = activeSet.has(first);
+      const secondActive = activeSet.has(second);
+      const isNegativeSample = !positiveStrength && firstActive !== secondActive;
+      const target = positiveStrength
+        ? clusterDistance * 0.74
+        : isNegativeSample
+          ? separationDistance
+          : clusterDistance * 1.08;
       const vector = getPairVector(a, b, firstIndex, secondIndex);
       if (vector.distance >= target) continue;
 
-      const unrelatedness = Math.pow(1 - relatedness, 1.55);
-      const activeBoost = activeSet.has(first) || activeSet.has(second) ? 1.18 : 1;
-      const push =
-        Math.min((target - vector.distance) * repulsionRate * (0.35 + unrelatedness), repulsionRate * 2.6) *
-        activeBoost;
-
+      const scale = positiveStrength ? 0.18 : isNegativeSample ? 1 : 0.24;
+      const push = Math.min((target - vector.distance) * repulsionRate * scale, repulsionRate * 2.2);
       if (push <= 0) continue;
 
       addDelta(first, -vector.nx * push, -vector.ny * push, -vector.nz * push);
@@ -534,7 +461,7 @@ function applyLayoutStep() {
 
   // Мягкое удержание около центра нужно не для масштаба пространства, а чтобы
   // учебные примеры не улетали далеко при длительной обработке.
-  const centerPull = 0.0009;
+  const centerPull = 0.00075;
   const maxDelta = Math.max(0.08, clusterDistance * 0.24);
 
   for (const [wordName, delta] of deltas) {
@@ -857,7 +784,7 @@ function updateStatus(message) {
     graphHint.textContent = message;
   } else if (state.running) {
     graphHint.textContent =
-      "Идет обработка: устойчивые соседи стягиваются пружинами, неродственные пары расходятся. " +
+      "Идет обработка: пары текущего окна временно сближаются, активные слова отталкиваются от отрицательных примеров. " +
       getNavigationHint();
   } else {
     graphHint.textContent = `Обновите слова, затем запустите обработку окна. ${getNavigationHint()}`;
@@ -890,7 +817,7 @@ function startProcessing() {
 function stopProcessing() {
   state.running = false;
   state.activeTokens = [];
-  state.activeEdgeKeys.clear();
+  state.activePairKeys.clear();
   state.stepAccumulator = 0;
   startButton.disabled = false;
   stopButton.disabled = true;

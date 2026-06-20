@@ -1136,7 +1136,7 @@ document.querySelectorAll(".template-button").forEach((button) => {
     if (!template) return;
     textInput.value = template;
     updateTemplateButtons();
-    updateStatus("Шаблон выбран. Нажмите «Обновить слова», чтобы изменить пространство.");
+    updateStatus("Пример выбран. Нажмите «Обновить слова», чтобы изменить пространство.");
   });
 });
 

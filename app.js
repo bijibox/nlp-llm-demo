@@ -7,6 +7,7 @@ const randomizeButton = document.getElementById("randomizeButton");
 const startButton = document.getElementById("startButton");
 const stopButton = document.getElementById("stopButton");
 const windowSizeInput = document.getElementById("windowSizeInput");
+const lineBreaksInput = document.getElementById("lineBreaksInput");
 const speedInput = document.getElementById("speedInput");
 const stepInput = document.getElementById("stepInput");
 const repulsionInput = document.getElementById("repulsionInput");
@@ -29,6 +30,7 @@ const state = {
   words: new Map(),
   edges: new Map(),
   tokens: [],
+  tokenLines: [],
   wordMass: new Map(),
   pairTotal: 0,
   maxPpmi: 0,
@@ -61,10 +63,18 @@ const textTemplates = Object.fromEntries(
 
 textInput.value = textTemplates.base;
 
-function tokenize(text) {
+function tokenizeLine(text) {
   return (text.toLocaleLowerCase("ru-RU").match(/[\p{L}\p{N}]+(?:[-'][\p{L}\p{N}]+)*/gu) || [])
     .map((token) => token.trim())
     .filter(Boolean);
+}
+
+function tokenizeTextByLine(text) {
+  return text.split(/\r\n?|\n/).map(tokenizeLine);
+}
+
+function tokenize(text) {
+  return tokenizeTextByLine(text).flat();
 }
 
 function clampNumber(input, fallback) {
@@ -143,7 +153,8 @@ function buildWordUpdateMessage(added, removed, stoppedProcessing) {
 }
 
 function updateWordsFromText({ announce = true, resetCursor = true } = {}) {
-  state.tokens = tokenize(textInput.value);
+  state.tokenLines = tokenizeTextByLine(textInput.value);
+  state.tokens = state.tokenLines.flat();
   const wordsInText = new Set(state.tokens);
   let added = 0;
 
@@ -163,8 +174,9 @@ function updateWordsFromText({ announce = true, resetCursor = true } = {}) {
 
   if (resetCursor) {
     state.cursor = 0;
-  } else if (state.cursor >= state.tokens.length) {
-    state.cursor = state.tokens.length ? state.cursor % state.tokens.length : 0;
+  } else {
+    const cursorLimit = getCursorLimit();
+    if (state.cursor >= cursorLimit) state.cursor = cursorLimit ? state.cursor % cursorLimit : 0;
   }
 
   let stoppedProcessing = false;
@@ -212,6 +224,10 @@ function getWindowSize() {
   return Math.round(clampNumber(windowSizeInput, 3));
 }
 
+function shouldKeepWindowsWithinLine() {
+  return lineBreaksInput.checked;
+}
+
 function getStepsPerSecond() {
   return Math.round(clampNumber(speedInput, 60));
 }
@@ -228,7 +244,30 @@ function getMinDistance() {
   return clampNumber(minDistanceInput, 1.5);
 }
 
-function buildActiveWindow() {
+function buildLineWindowStarts() {
+  const requestedSize = getWindowSize();
+  const starts = [];
+
+  for (let lineIndex = 0; lineIndex < state.tokenLines.length; lineIndex += 1) {
+    const tokens = state.tokenLines[lineIndex];
+    const size = Math.min(requestedSize, tokens.length);
+    if (!size) continue;
+
+    const lastStart = tokens.length - size;
+    for (let tokenIndex = 0; tokenIndex <= lastStart; tokenIndex += 1) {
+      starts.push({ lineIndex, tokenIndex });
+    }
+  }
+
+  return starts;
+}
+
+function getCursorLimit() {
+  if (shouldKeepWindowsWithinLine()) return buildLineWindowStarts().length;
+  return state.tokens.length;
+}
+
+function buildFlatActiveWindow() {
   const tokens = state.tokens;
   if (!tokens.length) return [];
 
@@ -238,6 +277,20 @@ function buildActiveWindow() {
     windowTokens.push(tokens[(state.cursor + index) % tokens.length]);
   }
   return windowTokens;
+}
+
+function buildLineBoundedActiveWindow() {
+  const starts = buildLineWindowStarts();
+  if (!starts.length) return [];
+
+  const { lineIndex, tokenIndex } = starts[state.cursor % starts.length];
+  const tokens = state.tokenLines[lineIndex] || [];
+  const size = Math.min(getWindowSize(), tokens.length);
+  return tokens.slice(tokenIndex, tokenIndex + size);
+}
+
+function buildActiveWindow() {
+  return shouldKeepWindowsWithinLine() ? buildLineBoundedActiveWindow() : buildFlatActiveWindow();
 }
 
 function getEdgeKey(first, second) {
@@ -272,6 +325,15 @@ function recomputeAssociationMaxima() {
     state.maxEdgeMass = Math.max(state.maxEdgeMass, edge.mass);
     state.maxPpmi = Math.max(state.maxPpmi, getPpmi(edge.first, edge.second));
   }
+}
+
+function resetAssociations() {
+  state.edges.clear();
+  state.wordMass.clear();
+  state.pairTotal = 0;
+  state.maxPpmi = 0;
+  state.maxEdgeMass = 0;
+  state.activeEdgeKeys.clear();
 }
 
 // PPMI: связь сильна, только если слова встречаются вместе чаще случайного.
@@ -504,6 +566,9 @@ function applyLayoutStep() {
 function runSimulationSteps(dt) {
   if (!state.running || !state.tokens.length) return;
 
+  const cursorLimit = getCursorLimit();
+  if (!cursorLimit) return;
+
   const stepsPerSecond = getStepsPerSecond();
   state.stepAccumulator = Math.min(state.stepAccumulator + dt * stepsPerSecond, stepsPerSecond);
   const steps = Math.min(Math.floor(state.stepAccumulator), 30);
@@ -514,7 +579,7 @@ function runSimulationSteps(dt) {
     state.activeTokens = buildActiveWindow();
     reinforceActiveEdges();
     applyLayoutStep();
-    state.cursor = (state.cursor + 1) % state.tokens.length;
+    state.cursor = (state.cursor + 1) % cursorLimit;
   }
 
   state.stepAccumulator -= steps;
@@ -815,12 +880,7 @@ function startProcessing() {
   state.running = true;
   state.cursor = 0;
   state.stepAccumulator = 0;
-  state.edges.clear();
-  state.wordMass.clear();
-  state.pairTotal = 0;
-  state.maxPpmi = 0;
-  state.maxEdgeMass = 0;
-  state.activeEdgeKeys.clear();
+  resetAssociations();
   state.activeTokens = buildActiveWindow();
   startButton.disabled = true;
   stopButton.disabled = false;
@@ -835,6 +895,20 @@ function stopProcessing() {
   startButton.disabled = false;
   stopButton.disabled = true;
   updateStatus("Обработка остановлена: положение заморожено");
+}
+
+function getLineBreakModeMessage() {
+  return shouldKeepWindowsWithinLine()
+    ? "Переносы учитываются: окно слов остается внутри одной строки"
+    : "Переносы игнорируются: окно слов идет по всему тексту";
+}
+
+function handleLineBreakModeChange() {
+  state.cursor = 0;
+  state.stepAccumulator = 0;
+  state.activeTokens = state.running ? buildActiveWindow() : [];
+  resetAssociations();
+  updateStatus(getLineBreakModeMessage());
 }
 
 function getNavigationHint() {
@@ -1049,6 +1123,7 @@ addWordsButton.addEventListener("click", () => updateWordsFromText());
 randomizeButton.addEventListener("click", randomizeWords);
 startButton.addEventListener("click", startProcessing);
 stopButton.addEventListener("click", stopProcessing);
+lineBreaksInput.addEventListener("change", handleLineBreakModeChange);
 
 textInput.addEventListener("input", () => {
   updateTemplateButtons();

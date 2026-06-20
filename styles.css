@@ -204,6 +204,43 @@ input:focus {
   gap: 7px;
 }
 
+.toggle-control {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  border: 1px solid var(--line-strong);
+  padding: 0 11px;
+  background: #ffffff;
+}
+
+.toggle-control input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.toggle-control input:focus {
+  box-shadow: none;
+  outline: 2px solid rgba(11, 111, 133, 0.35);
+  outline-offset: 2px;
+}
+
+.toggle-control span {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 input {
   min-height: 42px;
   width: 100%;

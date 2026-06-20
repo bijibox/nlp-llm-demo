@@ -440,41 +440,46 @@
         </div>
 
         <div class="control-grid">
-          <button id="addWordsButton" class="primary-action" type="button">Обновить слова</button>
-          <button id="randomizeButton" class="secondary-action" type="button">Разбросать</button>
+          <div class="control-actions" role="group" aria-label="Основные действия">
+            <button id="addWordsButton" class="primary-action" type="button">Обновить слова</button>
+            <div class="processing-actions" role="group" aria-label="Управление обработкой">
+              <button id="startButton" class="run-action" type="button">Старт</button>
+              <button id="stopButton" type="button" disabled>Стоп</button>
+            </div>
+            <button id="randomizeButton" class="secondary-action" type="button">Разбросать</button>
+          </div>
 
-          <label class="number-control">
-            <span>Окно слов</span>
-            <input id="windowSizeInput" type="number" min="2" max="12" step="1" value="3" />
-          </label>
+          <div class="settings-grid" role="group" aria-label="Настройки обработки">
+            <label class="number-control">
+              <span>Окно слов</span>
+              <input id="windowSizeInput" type="number" min="2" max="12" step="1" value="3" />
+            </label>
 
-          <label class="toggle-control">
-            <input id="lineBreaksInput" type="checkbox" />
-            <span>Не пересекать строки</span>
-          </label>
+            <label class="toggle-control">
+              <input id="lineBreaksInput" type="checkbox" />
+              <span>Не пересекать строки</span>
+            </label>
 
-          <label class="number-control">
-            <span>Скорость, шаг/с</span>
-            <input id="speedInput" type="number" min="1" max="200" step="10" value="70" />
-          </label>
+            <label class="number-control">
+              <span>Скорость, шаг/с</span>
+              <input id="speedInput" type="number" min="1" max="200" step="10" value="70" />
+            </label>
 
-          <label class="number-control">
-            <span>Сближение</span>
-            <input id="stepInput" type="number" min="0.0" max="1" step="0.05" value="0.55" />
-          </label>
+            <label class="number-control">
+              <span>Сближение</span>
+              <input id="stepInput" type="number" min="0.0" max="1" step="0.05" value="0.55" />
+            </label>
 
-          <label class="number-control">
-            <span>Отталкивание</span>
-            <input id="repulsionInput" type="number" min="0.0" max="1" step="0.05" value="0.75" />
-          </label>
+            <label class="number-control">
+              <span>Отталкивание</span>
+              <input id="repulsionInput" type="number" min="0.0" max="1" step="0.05" value="0.75" />
+            </label>
 
-          <label class="number-control">
-            <span>Минимальное расстояние</span>
-            <input id="minDistanceInput" type="number" min="0.4" max="4" step="0.1" value="0.9" />
-          </label>
-
-          <button id="startButton" class="run-action" type="button">Начать обработку текста</button>
-          <button id="stopButton" type="button" disabled>Стоп</button>
+            <label class="number-control">
+              <span>Минимальное расстояние</span>
+              <input id="minDistanceInput" type="number" min="0.4" max="4" step="0.1" value="0.9" />
+            </label>
+          </div>
         </div>
 
         <div class="status-row" aria-live="polite">

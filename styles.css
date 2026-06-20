@@ -193,10 +193,40 @@ input:focus {
 
 .control-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 10px;
-  align-items: end;
+  grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
   margin-top: 14px;
+}
+
+.control-actions,
+.settings-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.control-actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.control-actions button {
+  width: 100%;
+}
+
+.processing-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.processing-actions button {
+  min-height: 36px;
+  font-size: 13px;
+}
+
+.settings-grid {
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  align-items: end;
 }
 
 .number-control {
@@ -270,14 +300,6 @@ input {
   color: var(--accent-strong);
 }
 
-.primary-action {
-  grid-column: span 1;
-}
-
-.run-action {
-  grid-column: span 3;
-}
-
 .primary-action:hover:not(:disabled),
 .run-action:hover:not(:disabled) {
   background: var(--accent-strong);
@@ -311,6 +333,14 @@ input {
 
 @media (max-width: 940px) {
   .control-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .control-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -361,5 +391,14 @@ input {
 
   .control-grid {
     grid-template-columns: 1fr;
+  }
+
+  .control-actions,
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .processing-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
